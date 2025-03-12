@@ -1,5 +1,5 @@
 """federated_image_classification: Client script for federated learning with DenseNet + XGBoost."""
-
+# version: 1.0
 import argparse
 import logging
 import os
