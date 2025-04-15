@@ -482,6 +482,7 @@ class AsyncXGBoostClient(fl.client.Client):
         bst = xgb.Booster(params=self.params)
         para_b = bytearray(ins.parameters.tensors[0])
         bst.load_model(para_b)
+        self.local_model = bst  # Store the model for later use
         
         # Get predictions
         predictions = bst.predict(self.valid_dmatrix)
@@ -491,6 +492,20 @@ class AsyncXGBoostClient(fl.client.Client):
         # Calculate accuracy
         accuracy = np.mean(predicted_labels == true_labels)
         logger.info(f"Accuracy: {accuracy:.4f}")
+        
+        # Calculate confusion matrix
+        tp = np.sum((predicted_labels == 1) & (true_labels == 1))
+        fp = np.sum((predicted_labels == 1) & (true_labels == 0))
+        tn = np.sum((predicted_labels == 0) & (true_labels == 0))
+        fn = np.sum((predicted_labels == 0) & (true_labels == 1))
+        
+        # Calculate precision, recall, and F1 score
+        precision = tp / (tp + fp) if (tp + fp) > 0 else 0
+        recall = tp / (tp + fn) if (tp + fn) > 0 else 0
+        f1_score = 2 * precision * recall / (precision + recall) if (precision + recall) > 0 else 0
+        
+        logger.info(f"Precision: {precision:.4f}, Recall: {recall:.4f}, F1 Score: {f1_score:.4f}")
+        logger.info(f"Confusion Matrix: TP={tp}, FP={fp}, TN={tn}, FN={fn}")
         
         # Calculate AUC (existing logic)
         eval_results = bst.eval_set(
@@ -502,17 +517,24 @@ class AsyncXGBoostClient(fl.client.Client):
         metric_value = round(float(metrics_str.split(":")[1]), 4)
         logger.info(f"Evaluation result: {metric_name}={metric_value}")
         
-        # Return both accuracy and AUC
+        # Return extended metrics including confusion matrix components
         return EvaluateRes(
             status=Status(
                 code=Code.OK,
                 message="OK",
             ),
-            loss=0.0,  # You can also calculate loss if needed
+            loss=0.0,
             num_examples=self.num_val,
             metrics={
                 "accuracy": accuracy,
                 metric_name: metric_value,  # Existing metric (e.g., AUC)
+                "precision": precision,
+                "recall": recall,
+                "f1_score": f1_score,
+                "true_positives": int(tp),
+                "false_positives": int(fp),
+                "true_negatives": int(tn),
+                "false_negatives": int(fn),
             },
         )
 
