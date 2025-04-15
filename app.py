@@ -13,7 +13,8 @@ from PyQt6.QtWidgets import (
     QSizePolicy, QGridLayout
 )
 from PyQt6.QtCore import Qt, pyqtSignal, QObject, QTimer, QMetaObject, Q_ARG
-from PyQt6.QtGui import QFont, QIcon, QColor, QPalette, QPixmap, QImage
+from PyQt6.QtGui import QFont, QIcon, QColor, QPalette, QPixmap, QImage, QMovie
+from PyQt6.QtCore import QSize
 
 # Import the client functions
 from client import (
@@ -84,16 +85,15 @@ class StyledProgressBar(QProgressBar):
         super().__init__(parent)
         self.setStyleSheet(f"""
             QProgressBar {{
-                border: 1px solid #bdc3c7;
-                border-radius: 3px;
+                border: 1px solid #e0e0e0;
+                border-radius: 5px;
                 text-align: center;
-                background-color: #ecf0f1;
+                background-color: #f5f5f5;
                 height: 20px;
             }}
             QProgressBar::chunk {{
                 background-color: {SUCCESS_COLOR};
-                width: 10px;
-                margin: 0px;
+                border-radius: 5px;
             }}
         """)
 
@@ -153,15 +153,10 @@ class FederatedLearningApp(QMainWindow):
         self.create_input_form()
         self.tabs.addTab(self.config_tab, "Configuration")
         
-        # Create metrics tab
+        # Create combined metrics tab
         self.metrics_tab = QWidget()
-        self.create_metrics_area()
-        self.tabs.addTab(self.metrics_tab, "Training Metrics")
-        
-        # Create advanced metrics tab
-        self.advanced_metrics_tab = QWidget()
-        self.create_advanced_metrics_area()
-        self.tabs.addTab(self.advanced_metrics_tab, "Advanced Metrics")
+        self.create_combined_metrics_area()
+        self.tabs.addTab(self.metrics_tab, "Metrics")
         
         # Create prediction tab
         self.prediction_tab = QWidget()
@@ -214,25 +209,28 @@ class FederatedLearningApp(QMainWindow):
                 font-family: 'Segoe UI', 'Arial', sans-serif;
             }}
             QGroupBox {{
-                border: 1px solid #bdc3c7;
-                border-radius: 5px;
+                border: 1px solid #e0e0e0;
+                border-radius: 8px;
                 margin-top: 15px;
                 font-weight: bold;
                 padding-top: 15px;
+                background-color: #fafafa;
             }}
             QGroupBox::title {{
                 subcontrol-origin: margin;
                 subcontrol-position: top left;
-                padding: 0 5px;
+                padding: 0 8px;
                 color: {SECONDARY_COLOR};
+                font-size: 13px;
             }}
             QPushButton {{
                 background-color: {MAIN_COLOR};
                 color: white;
                 border: none;
                 padding: 8px 16px;
-                border-radius: 4px;
+                border-radius: 5px;
                 font-weight: bold;
+                min-height: 30px;
             }}
             QPushButton:hover {{
                 background-color: #2980b9;
@@ -244,19 +242,40 @@ class FederatedLearningApp(QMainWindow):
                 background-color: #bdc3c7;
             }}
             QLineEdit, QSpinBox, QComboBox {{
-                border: 1px solid #bdc3c7;
-                border-radius: 4px;
-                padding: 5px;
+                border: 1px solid #e0e0e0;
+                border-radius: 5px;
+                padding: 8px;
                 background-color: white;
+                min-height: 25px;
             }}
             QLabel {{
                 color: {TEXT_COLOR};
             }}
             QTextEdit {{
-                border: 1px solid #bdc3c7;
-                border-radius: 4px;
+                border: 1px solid #e0e0e0;
+                border-radius: 5px;
                 background-color: white;
                 font-family: 'Consolas', 'Courier New', monospace;
+                padding: 5px;
+            }}
+            QTabWidget::pane {{
+                border: 1px solid #e0e0e0;
+                border-radius: 5px;
+                top: -1px;
+            }}
+            QSplitter::handle {{
+                background-color: #e0e0e0;
+                height: 2px;
+            }}
+            QProgressBar {{
+                text-align: center;
+                border-radius: 5px;
+                background-color: #f5f5f5;
+                min-height: 20px;
+            }}
+            QProgressBar::chunk {{
+                background-color: {SUCCESS_COLOR};
+                border-radius: 5px;
             }}
         """)
     
@@ -264,9 +283,10 @@ class FederatedLearningApp(QMainWindow):
         """Create a header with title and description"""
         header = QFrame()
         header.setStyleSheet(f"""
-            background-color: {SECONDARY_COLOR};
-            border-radius: 5px;
-            margin-bottom: 5px;
+            background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 {SECONDARY_COLOR}, stop:1 {MAIN_COLOR});
+            border-radius: 8px;
+            margin-bottom: 10px;
+            padding: 5px;
         """)
         header_layout = QVBoxLayout(header)
         
@@ -274,7 +294,7 @@ class FederatedLearningApp(QMainWindow):
         title_label = QLabel("Federated XGBoost Learning Client")
         title_label.setStyleSheet(f"""
             color: white;
-            font-size: 18px;
+            font-size: 20px;
             font-weight: bold;
         """)
         title_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -282,8 +302,8 @@ class FederatedLearningApp(QMainWindow):
         # Description label
         desc_label = QLabel("Train machine learning models collaboratively across distributed clients")
         desc_label.setStyleSheet(f"""
-            color: #ecf0f1;
-            font-size: 12px;
+            color: rgba(255, 255, 255, 0.9);
+            font-size: 13px;
         """)
         desc_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         
@@ -434,21 +454,29 @@ class FederatedLearningApp(QMainWindow):
         log_group.setLayout(log_layout)
         layout.addWidget(log_group)
 
-    def create_metrics_area(self):
+    def create_combined_metrics_area(self):
+        """Create a combined metrics area with all metrics in one place"""
         metrics_layout = QVBoxLayout(self.metrics_tab)
         metrics_layout.setContentsMargins(10, 10, 10, 10)
         metrics_layout.setSpacing(15)
         
-        # Progress section
+        # Progress section with spinner
         progress_group = QGroupBox("Training Progress")
         progress_layout = QVBoxLayout()
         
-        # Progress bar
+        # Progress bar and spinner in same row
         self.progress_layout = QHBoxLayout()
         self.progress_bar = StyledProgressBar()
         self.progress_label = QLabel("0%")
+        
+        # Create loading spinner
+        self.loading_spinner = QLabel()
+        self.loading_spinner.setFixedSize(24, 24)
+        self.loading_spinner.setVisible(False)
+        
         self.progress_layout.addWidget(self.progress_bar)
         self.progress_layout.addWidget(self.progress_label)
+        self.progress_layout.addWidget(self.loading_spinner)
         progress_layout.addLayout(self.progress_layout)
         
         # Status label
@@ -459,11 +487,16 @@ class FederatedLearningApp(QMainWindow):
         progress_group.setLayout(progress_layout)
         metrics_layout.addWidget(progress_group)
         
-        # Model performance metrics
-        metrics_group = QGroupBox("Model Performance")
-        metrics_form_layout = QFormLayout()
-        metrics_form_layout.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
-        metrics_form_layout.setVerticalSpacing(10)
+        # Create metrics grid for better organization
+        metrics_grid = QGridLayout()
+        metrics_grid.setVerticalSpacing(15)
+        metrics_grid.setHorizontalSpacing(20)
+        
+        # Performance metrics in the first column
+        performance_group = QGroupBox("Model Performance")
+        performance_layout = QFormLayout()
+        performance_layout.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
+        performance_layout.setVerticalSpacing(10)
         
         # Create metric displays with consistent styling
         self.accuracy_label = self.create_metric_label("N/A")
@@ -471,24 +504,15 @@ class FederatedLearningApp(QMainWindow):
         self.training_time_label = self.create_metric_label("N/A")
         self.model_size_label = self.create_metric_label("N/A")
         
-        metrics_form_layout.addRow(QLabel("Accuracy:"), self.accuracy_label)
-        metrics_form_layout.addRow(QLabel("AUC:"), self.auc_label)
-        metrics_form_layout.addRow(QLabel("Training Time:"), self.training_time_label)
-        metrics_form_layout.addRow(QLabel("Model Size:"), self.model_size_label)
+        performance_layout.addRow(QLabel("Accuracy:"), self.accuracy_label)
+        performance_layout.addRow(QLabel("AUC:"), self.auc_label)
+        performance_layout.addRow(QLabel("Training Time:"), self.training_time_label)
+        performance_layout.addRow(QLabel("Model Size:"), self.model_size_label)
         
-        metrics_group.setLayout(metrics_form_layout)
-        metrics_layout.addWidget(metrics_group)
+        performance_group.setLayout(performance_layout)
+        metrics_grid.addWidget(performance_group, 0, 0)
         
-        # Add stretch to push groups to the top
-        metrics_layout.addStretch()
-
-    def create_advanced_metrics_area(self):
-        """Create the advanced metrics area with federated learning specific metrics"""
-        metrics_layout = QVBoxLayout(self.advanced_metrics_tab)
-        metrics_layout.setContentsMargins(10, 10, 10, 10)
-        metrics_layout.setSpacing(15)
-        
-        # Classification metrics
+        # Classification metrics in the second column
         classification_group = QGroupBox("Classification Metrics")
         classification_layout = QFormLayout()
         classification_layout.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
@@ -510,9 +534,9 @@ class FederatedLearningApp(QMainWindow):
                                     self.f1_score_label)
         
         classification_group.setLayout(classification_layout)
-        metrics_layout.addWidget(classification_group)
+        metrics_grid.addWidget(classification_group, 0, 1)
         
-        # Confusion matrix
+        # Confusion matrix at the bottom row, spans two columns
         confusion_group = QGroupBox("Confusion Matrix")
         confusion_layout = QGridLayout()
         
@@ -535,7 +559,6 @@ class FederatedLearningApp(QMainWindow):
         confusion_layout.addWidget(self.tn_label, 2, 2)  # True Negative
         
         confusion_group.setLayout(confusion_layout)
-        metrics_layout.addWidget(confusion_group)
         
         # Federated learning specific metrics
         federated_group = QGroupBox("Federated Learning Metrics")
@@ -559,7 +582,11 @@ class FederatedLearningApp(QMainWindow):
                                self.convergence_rate_label)
         
         federated_group.setLayout(federated_layout)
-        metrics_layout.addWidget(federated_group)
+        metrics_grid.addWidget(federated_group, 1, 0)
+        metrics_grid.addWidget(confusion_group, 1, 1)
+        
+        # Add the grid to the main layout
+        metrics_layout.addLayout(metrics_grid)
         
         # Add stretch to push groups to the top
         metrics_layout.addStretch()
@@ -842,6 +869,9 @@ class FederatedLearningApp(QMainWindow):
             padding: 8px;
         """)
         
+        # Show spinner
+        self.start_spinner_animation(self.loading_spinner)
+        
         # Reset metrics
         self.reset_metrics()
         
@@ -1104,6 +1134,9 @@ class FederatedLearningApp(QMainWindow):
         self.progress_bar.setValue(100)
         self.progress_label.setText("100%")
         
+        # Stop spinner
+        self.loading_spinner.setVisible(False)
+        
         self.start_button.setEnabled(True)
         self.stop_button.setEnabled(False)
         self.training_status_label.setText("Status: Completed")
@@ -1177,8 +1210,25 @@ class FederatedLearningApp(QMainWindow):
         layout.setContentsMargins(10, 10, 10, 10)
         layout.setSpacing(15)
         
+        # Image selection and Result section in a single card-like container
+        main_container = QFrame()
+        main_container.setStyleSheet("""
+            QFrame {
+                background-color: white;
+                border-radius: 8px;
+                border: 1px solid #e0e0e0;
+            }
+        """)
+        main_layout = QVBoxLayout(main_container)
+        main_layout.setContentsMargins(15, 15, 15, 15)
+        
         # Image selection section
         input_group = QGroupBox("Image Selection")
+        input_group.setStyleSheet("""
+            QGroupBox {
+                font-weight: bold;
+            }
+        """)
         input_layout = QVBoxLayout()
         
         # File selection
@@ -1195,18 +1245,33 @@ class FederatedLearningApp(QMainWindow):
         file_layout.addWidget(browse_button)
         input_layout.addLayout(file_layout)
         
-        # Predict button
+        # Predict button with spinner
+        predict_layout = QHBoxLayout()
         self.predict_button = QPushButton("Run Prediction")
         self.predict_button.setIcon(QIcon("predict.png"))  # Add icon if available
         self.predict_button.clicked.connect(self.run_prediction)
         self.predict_button.setEnabled(False)  # Only enable after training
         
-        input_layout.addWidget(self.predict_button)
+        # Prediction spinner
+        self.prediction_spinner = QLabel()
+        self.prediction_spinner.setFixedSize(24, 24)
+        self.prediction_spinner.setVisible(False)
+        
+        predict_layout.addWidget(self.predict_button)
+        predict_layout.addWidget(self.prediction_spinner)
+        predict_layout.addStretch()
+        
+        input_layout.addLayout(predict_layout)
         input_group.setLayout(input_layout)
-        layout.addWidget(input_group)
+        main_layout.addWidget(input_group)
         
         # Result section
         result_group = QGroupBox("Prediction Results")
+        result_group.setStyleSheet("""
+            QGroupBox {
+                font-weight: bold;
+            }
+        """)
         result_layout = QHBoxLayout()
         
         # Left side: Original image and prediction result
@@ -1261,20 +1326,9 @@ class FederatedLearningApp(QMainWindow):
         result_layout.addLayout(right_panel)
         
         result_group.setLayout(result_layout)
-        layout.addWidget(result_group)
+        main_layout.addWidget(result_group)
         
-        # Add technical details section
-        details_group = QGroupBox("Technical Details")
-        details_layout = QVBoxLayout()
-        
-        self.prediction_details = QTextEdit()
-        self.prediction_details.setReadOnly(True)
-        self.prediction_details.setMaximumHeight(100)
-        self.prediction_details.setPlaceholderText("Prediction details will appear here")
-        
-        details_layout.addWidget(self.prediction_details)
-        details_group.setLayout(details_layout)
-        layout.addWidget(details_group)
+        layout.addWidget(main_container)
 
     def browse_image(self):
         """Browse for image file"""
@@ -1316,6 +1370,9 @@ class FederatedLearningApp(QMainWindow):
         # Disable the button during prediction
         self.predict_button.setEnabled(False)
         self.statusBar.showMessage("Running prediction...", 3000)
+        
+        # Show spinner
+        self.start_spinner_animation(self.prediction_spinner)
         
         # Connect the signal to handle prediction results
         self.signals.prediction_result.connect(self.update_prediction_ui)
@@ -1388,7 +1445,7 @@ class FederatedLearningApp(QMainWindow):
             self.signals.log.emit(f"<span style='color:{ERROR_COLOR};'>{error_msg}</span>")
             
             # Update UI on the main thread using invokeMethod
-            QMetaObject.invokeMethod(self.prediction_details, "setText", 
+            QMetaObject.invokeMethod(self.prediction_result_label, "setText", 
                                     Qt.ConnectionType.QueuedConnection,
                                     Q_ARG(str, error_msg))
                                     
@@ -1490,6 +1547,9 @@ class FederatedLearningApp(QMainWindow):
 
     def update_prediction_ui(self, predicted_class, class_probability, raw_probability, gradcam_data):
         """Update UI with prediction results - called on the main thread via signals"""
+        # Stop spinner
+        self.prediction_spinner.setVisible(False)
+        
         # Set prediction result with appropriate color
         color = SUCCESS_COLOR if predicted_class == "Normal" else WARNING_COLOR
         self.prediction_result_label.setText(f"Prediction: {predicted_class}")
@@ -1502,14 +1562,6 @@ class FederatedLearningApp(QMainWindow):
         
         # Set confidence
         self.prediction_confidence_label.setText(f"Confidence: {class_probability:.2%}")
-        
-        # Set technical details
-        details = (
-            f"Raw probability: {raw_probability:.6f}\n"
-            f"Threshold: 0.5\n"
-            f"Model: XGBoost with Ensemble Feature Extraction"
-        )
-        self.prediction_details.setText(details)
         
         # Update Grad-CAM visualization if available
         if gradcam_data:
@@ -1533,8 +1585,29 @@ class FederatedLearningApp(QMainWindow):
         # Update status bar
         self.statusBar.showMessage(f"Prediction completed: {predicted_class} with {class_probability:.2%} confidence", 5000)
         
+        # Re-enable the predict button
+        self.predict_button.setEnabled(True)
+        
         # Disconnect the signal to avoid memory leaks
         self.signals.prediction_result.disconnect(self.update_prediction_ui)
+
+    def start_spinner_animation(self, spinner_label):
+        """Start the spinner animation"""
+        # Create spinner animation
+        spinner_movie = QMovie("spinner.gif")
+        if not spinner_movie.isValid() or spinner_movie.fileName() == "":
+            # If spinner.gif is not available, create a text-based spinner
+            spinner_label.setText("⟳")
+            spinner_label.setStyleSheet("""
+                font-size: 20px;
+                color: #3498db;
+            """)
+        else:
+            spinner_movie.setScaledSize(QSize(24, 24))
+            spinner_label.setMovie(spinner_movie)
+            spinner_movie.start()
+        
+        spinner_label.setVisible(True)
 
 
 if __name__ == "__main__":
