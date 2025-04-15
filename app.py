@@ -12,8 +12,8 @@ from PyQt6.QtWidgets import (
     QSplitter, QTabWidget, QFrame, QStatusBar, QComboBox, QToolTip,
     QSizePolicy, QGridLayout
 )
-from PyQt6.QtCore import Qt, pyqtSignal, QObject, QTimer
-from PyQt6.QtGui import QFont, QIcon, QColor, QPalette, QPixmap
+from PyQt6.QtCore import Qt, pyqtSignal, QObject, QTimer, QMetaObject, Q_ARG
+from PyQt6.QtGui import QFont, QIcon, QColor, QPalette, QPixmap, QImage
 
 # Import the client functions
 from client import (
@@ -22,6 +22,15 @@ from client import (
 import flwr as fl
 import xgboost as xgb
 import numpy as np
+import torch
+from PIL import Image
+from torchvision import transforms
+from client import get_ensemble_feature_extractor
+import matplotlib.pyplot as plt
+from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
+import matplotlib.cm as cm
+import io
+import cv2
 
 # Constants for styling
 MAIN_COLOR = "#3498db"  # Blue
@@ -65,6 +74,8 @@ class WorkerSignals(QObject):
     log = pyqtSignal(str)
     metrics = pyqtSignal(dict)
     status_message = pyqtSignal(str)
+    # Add signal for prediction results
+    prediction_result = pyqtSignal(object, object, float, object)
 
 
 class StyledProgressBar(QProgressBar):
@@ -151,6 +162,11 @@ class FederatedLearningApp(QMainWindow):
         self.advanced_metrics_tab = QWidget()
         self.create_advanced_metrics_area()
         self.tabs.addTab(self.advanced_metrics_tab, "Advanced Metrics")
+        
+        # Create prediction tab
+        self.prediction_tab = QWidget()
+        self.create_prediction_area()
+        self.tabs.addTab(self.prediction_tab, "Prediction")
         
         self.top_layout.addWidget(self.tabs)
         
@@ -1043,6 +1059,11 @@ class FederatedLearningApp(QMainWindow):
             self.progress_bar.setValue(100)
             self.progress_label.setText("100%")
             
+            # Enable prediction if we have a training interface
+            if hasattr(self, 'predict_button'):
+                self.predict_button.setEnabled(True)
+                self.signals.log.emit(f"<span style='color:{MAIN_COLOR};'>Prediction feature is now available</span>")
+            
         except Exception as e:
             self.signals.log.emit(f"<span style='color:{ERROR_COLOR}; font-weight:bold;'>Error during training: {str(e)}</span>")
             self.signals.status_message.emit(f"Error: {str(e)}")
@@ -1149,6 +1170,371 @@ class FederatedLearningApp(QMainWindow):
         
         # Accept the close event
         event.accept()
+
+    def create_prediction_area(self):
+        """Create the prediction area with image upload and visualization"""
+        layout = QVBoxLayout(self.prediction_tab)
+        layout.setContentsMargins(10, 10, 10, 10)
+        layout.setSpacing(15)
+        
+        # Image selection section
+        input_group = QGroupBox("Image Selection")
+        input_layout = QVBoxLayout()
+        
+        # File selection
+        file_layout = QHBoxLayout()
+        self.image_path_input = QLineEdit()
+        self.image_path_input.setPlaceholderText("Select an image file...")
+        self.image_path_input.setReadOnly(True)
+        
+        browse_button = QPushButton("Browse")
+        browse_button.setIcon(QIcon("image.png"))  # Add image icon if available
+        browse_button.clicked.connect(self.browse_image)
+        
+        file_layout.addWidget(self.image_path_input)
+        file_layout.addWidget(browse_button)
+        input_layout.addLayout(file_layout)
+        
+        # Predict button
+        self.predict_button = QPushButton("Run Prediction")
+        self.predict_button.setIcon(QIcon("predict.png"))  # Add icon if available
+        self.predict_button.clicked.connect(self.run_prediction)
+        self.predict_button.setEnabled(False)  # Only enable after training
+        
+        input_layout.addWidget(self.predict_button)
+        input_group.setLayout(input_layout)
+        layout.addWidget(input_group)
+        
+        # Result section
+        result_group = QGroupBox("Prediction Results")
+        result_layout = QHBoxLayout()
+        
+        # Left side: Original image and prediction result
+        left_panel = QVBoxLayout()
+        self.image_label = QLabel("No image selected")
+        self.image_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.image_label.setMinimumSize(300, 300)
+        self.image_label.setStyleSheet(f"""
+            border: 1px solid #bdc3c7;
+            background-color: white;
+            border-radius: 4px;
+        """)
+        
+        self.prediction_result_label = QLabel("Prediction: N/A")
+        self.prediction_result_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.prediction_result_label.setStyleSheet(f"""
+            font-size: 16px;
+            font-weight: bold;
+            padding: 10px;
+        """)
+        
+        self.prediction_confidence_label = QLabel("Confidence: N/A")
+        self.prediction_confidence_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        
+        left_panel.addWidget(self.image_label)
+        left_panel.addWidget(self.prediction_result_label)
+        left_panel.addWidget(self.prediction_confidence_label)
+        
+        # Right side: Grad-CAM visualization
+        right_panel = QVBoxLayout()
+        
+        self.gradcam_label = QLabel("Grad-CAM visualization will appear here")
+        self.gradcam_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.gradcam_label.setMinimumSize(300, 300)
+        self.gradcam_label.setStyleSheet(f"""
+            border: 1px solid #bdc3c7;
+            background-color: white;
+            border-radius: 4px;
+        """)
+        
+        self.gradcam_explanation = QLabel(
+            "Grad-CAM highlights the regions that influenced the model's prediction."
+        )
+        self.gradcam_explanation.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.gradcam_explanation.setWordWrap(True)
+        
+        right_panel.addWidget(self.gradcam_label)
+        right_panel.addWidget(self.gradcam_explanation)
+        
+        # Add panels to layout
+        result_layout.addLayout(left_panel)
+        result_layout.addLayout(right_panel)
+        
+        result_group.setLayout(result_layout)
+        layout.addWidget(result_group)
+        
+        # Add technical details section
+        details_group = QGroupBox("Technical Details")
+        details_layout = QVBoxLayout()
+        
+        self.prediction_details = QTextEdit()
+        self.prediction_details.setReadOnly(True)
+        self.prediction_details.setMaximumHeight(100)
+        self.prediction_details.setPlaceholderText("Prediction details will appear here")
+        
+        details_layout.addWidget(self.prediction_details)
+        details_group.setLayout(details_layout)
+        layout.addWidget(details_group)
+
+    def browse_image(self):
+        """Browse for image file"""
+        file_path, _ = QFileDialog.getOpenFileName(
+            self, 
+            "Select Image File",
+            "",
+            "Image Files (*.png *.jpg *.jpeg)"
+        )
+        if file_path:
+            self.image_path_input.setText(file_path)
+            
+            # Display the selected image
+            pixmap = QPixmap(file_path)
+            if not pixmap.isNull():
+                pixmap = pixmap.scaled(300, 300, Qt.AspectRatioMode.KeepAspectRatio)
+                self.image_label.setPixmap(pixmap)
+                
+                # Enable predict button if model is available
+                if hasattr(self, 'client') and self.client and hasattr(self.client, 'local_model'):
+                    self.predict_button.setEnabled(True)
+                    self.statusBar.showMessage("Image loaded, ready for prediction", 3000)
+                else:
+                    self.statusBar.showMessage("Image loaded, but no trained model available. Train a model first.", 5000)
+            else:
+                self.image_label.setText("Failed to load image")
+
+    def run_prediction(self):
+        """Run prediction on the selected image"""
+        if not hasattr(self, 'client') or not self.client or not hasattr(self.client, 'local_model'):
+            self.statusBar.showMessage("No trained model available. Train a model first.", 5000)
+            return
+            
+        image_path = self.image_path_input.text()
+        if not image_path or not os.path.isfile(image_path):
+            self.statusBar.showMessage("Please select a valid image file", 3000)
+            return
+            
+        # Disable the button during prediction
+        self.predict_button.setEnabled(False)
+        self.statusBar.showMessage("Running prediction...", 3000)
+        
+        # Connect the signal to handle prediction results
+        self.signals.prediction_result.connect(self.update_prediction_ui)
+        
+        # Run prediction in a thread
+        prediction_thread = threading.Thread(
+            target=self.process_prediction,
+            args=(image_path,),
+            daemon=True
+        )
+        prediction_thread.start()
+
+    def process_prediction(self, image_path):
+        """Process the image and run prediction"""
+        try:
+            # Load and preprocess the image
+            transform = transforms.Compose([
+                transforms.Resize(256),
+                transforms.CenterCrop(224),
+                transforms.ToTensor(),
+                transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
+            ])
+            
+            # Open image and apply transformations
+            image = Image.open(image_path).convert('RGB')
+            input_tensor = transform(image)
+            input_batch = input_tensor.unsqueeze(0)  # Create a batch
+            
+            # Get the ensemble feature extractor
+            device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+            ensemble_models = get_ensemble_feature_extractor()
+            
+            # Extract features using the ensemble
+            features_list = []
+            gradcam_data = None
+            
+            for model_name, model in ensemble_models.items():
+                model.eval()
+                with torch.no_grad():
+                    features = model(input_batch.to(device))
+                    features_list.append(features.cpu().numpy())
+                
+                # Use the first model for Grad-CAM
+                if gradcam_data is None:
+                    gradcam_data = self.compute_gradcam(model, input_batch.to(device), image)
+            
+            # Combine features from all models
+            combined_features = np.hstack([features for features in features_list])
+            
+            # Create DMatrix for XGBoost
+            dmatrix = xgb.DMatrix(combined_features)
+            
+            # Run prediction with the trained model
+            prediction = self.client.local_model.predict(dmatrix)
+            
+            # Get prediction results
+            probability = prediction[0]
+            predicted_class = "Infected" if probability > 0.5 else "Normal"
+            class_probability = probability if probability > 0.5 else 1 - probability
+            
+            # Emit signal with results to update UI on main thread
+            self.signals.prediction_result.emit(predicted_class, class_probability, probability, gradcam_data)
+            
+            # Log details via signal to ensure thread safety
+            self.signals.log.emit(f"<span style='color:{MAIN_COLOR};'>Prediction completed for {os.path.basename(image_path)}: {predicted_class} ({class_probability:.4f})</span>")
+            
+        except Exception as e:
+            error_msg = f"Error during prediction: {str(e)}"
+            # Use signal to safely update log from worker thread
+            self.signals.log.emit(f"<span style='color:{ERROR_COLOR};'>{error_msg}</span>")
+            
+            # Update UI on the main thread using invokeMethod
+            QMetaObject.invokeMethod(self.prediction_details, "setText", 
+                                    Qt.ConnectionType.QueuedConnection,
+                                    Q_ARG(str, error_msg))
+                                    
+            QMetaObject.invokeMethod(self.statusBar, "showMessage", 
+                                    Qt.ConnectionType.QueuedConnection,
+                                    Q_ARG(str, error_msg),
+                                    Q_ARG(int, 5000))
+        finally:
+            # Re-enable the predict button on the main thread
+            QMetaObject.invokeMethod(self.predict_button, "setEnabled", 
+                                    Qt.ConnectionType.QueuedConnection,
+                                    Q_ARG(bool, True))
+
+    def compute_gradcam(self, model, input_tensor, original_image):
+        """Compute Grad-CAM visualization for the given model and input."""
+        try:
+            # Make sure input tensor requires gradient
+            input_tensor = input_tensor.clone().detach()
+            input_tensor.requires_grad = True
+
+            # Forward pass
+            features = model.features(input_tensor)
+            
+            # For DenseNet, use the final convolutional layer
+            if hasattr(model, 'features') and hasattr(features, 'shape'):
+                # Store gradients
+                gradients = None
+                
+                # Register hook to capture gradients
+                def save_gradients(grad):
+                    nonlocal gradients
+                    gradients = grad.detach().cpu().numpy()
+                
+                # Add hook to the last convolutional layer output
+                features.register_hook(save_gradients)
+                
+                # Forward pass through remaining layers
+                output = model.classifier(torch.nn.functional.adaptive_avg_pool2d(
+                    features, (1, 1)).view(features.size(0), -1))
+                
+                # Get the index of the class with maximum score
+                max_score_idx = output.argmax().item()
+                
+                # Backward pass (calculate gradients)
+                model.zero_grad()
+                output[0, max_score_idx].backward()
+                
+                # Process collected gradients
+                if gradients is not None:
+                    # Take the gradients of the output w.r.t. the last conv layer
+                    pooled_gradients = np.mean(gradients[0], axis=(1, 2))
+                    
+                    # Get the feature maps from the last conv layer
+                    activations = features.detach().cpu().numpy()[0]
+                    
+                    # Weight the channels by corresponding gradients
+                    for i in range(len(pooled_gradients)):
+                        activations[i, :, :] *= pooled_gradients[i]
+                    
+                    # Generate heatmap by averaging over channels
+                    heatmap = np.mean(activations, axis=0)
+                    
+                    # Apply ReLU to the heatmap
+                    heatmap = np.maximum(heatmap, 0)
+                    
+                    # Normalize the heatmap
+                    if np.max(heatmap) > 0:  # Avoid division by zero
+                        heatmap = (heatmap - np.min(heatmap)) / (np.max(heatmap) - np.min(heatmap))
+                    
+                    # Resize heatmap to match the original image size
+                    heatmap = cv2.resize(heatmap, (original_image.width, original_image.height))
+                    
+                    # Apply colormap to create visualization
+                    cam = cv2.applyColorMap(np.uint8(255 * heatmap), cv2.COLORMAP_JET)
+                    
+                    # Convert original image to numpy
+                    original_np = np.array(original_image)
+                    # Convert RGB to BGR for OpenCV
+                    original_np = original_np[:, :, ::-1].copy()
+                    
+                    # Overlay heatmap on original image
+                    superimposed = cv2.addWeighted(original_np, 0.6, cam, 0.4, 0)
+                    
+                    # Convert back to RGB for display
+                    superimposed = cv2.cvtColor(superimposed, cv2.COLOR_BGR2RGB)
+                    
+                    return {
+                        'heatmap': cam,
+                        'superimposed': superimposed,
+                        'cam': cam
+                    }
+        
+        except Exception as e:
+            # Use signals to emit log message from non-UI thread
+            self.signals.log.emit(f"<span style='color:{WARNING_COLOR};'>Warning: Could not compute Grad-CAM: {str(e)}</span>")
+            return None
+            
+        return None
+
+    def update_prediction_ui(self, predicted_class, class_probability, raw_probability, gradcam_data):
+        """Update UI with prediction results - called on the main thread via signals"""
+        # Set prediction result with appropriate color
+        color = SUCCESS_COLOR if predicted_class == "Normal" else WARNING_COLOR
+        self.prediction_result_label.setText(f"Prediction: {predicted_class}")
+        self.prediction_result_label.setStyleSheet(f"""
+            font-size: 16px; 
+            font-weight: bold; 
+            color: {color}; 
+            padding: 10px;
+        """)
+        
+        # Set confidence
+        self.prediction_confidence_label.setText(f"Confidence: {class_probability:.2%}")
+        
+        # Set technical details
+        details = (
+            f"Raw probability: {raw_probability:.6f}\n"
+            f"Threshold: 0.5\n"
+            f"Model: XGBoost with Ensemble Feature Extraction"
+        )
+        self.prediction_details.setText(details)
+        
+        # Update Grad-CAM visualization if available
+        if gradcam_data:
+            height, width, channel = gradcam_data['superimposed'].shape
+            bytes_per_line = 3 * width
+            
+            q_image = QImage(
+                gradcam_data['superimposed'].data, 
+                width, 
+                height, 
+                bytes_per_line, 
+                QImage.Format.Format_RGB888
+            )
+            
+            pixmap = QPixmap.fromImage(q_image)
+            scaled_pixmap = pixmap.scaled(300, 300, Qt.AspectRatioMode.KeepAspectRatio)
+            self.gradcam_label.setPixmap(scaled_pixmap)
+        else:
+            self.gradcam_label.setText("Grad-CAM visualization not available")
+            
+        # Update status bar
+        self.statusBar.showMessage(f"Prediction completed: {predicted_class} with {class_probability:.2%} confidence", 5000)
+        
+        # Disconnect the signal to avoid memory leaks
+        self.signals.prediction_result.disconnect(self.update_prediction_ui)
 
 
 if __name__ == "__main__":
